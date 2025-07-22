@@ -1,140 +1,117 @@
 // Importação dos módulos necessários
-// Express é o framework que nos ajuda a criar o servidor e as rotas da API.
-// Firebase Admin SDK é o kit de ferramentas para conectar nosso servidor ao Firebase.
 const express = require('express');
 const admin = require('firebase-admin');
+const cors = require('cors'); // Importa o pacote CORS
 
 // --- CONFIGURAÇÃO INICIAL ---
-
-// Carregue a sua chave de conta de serviço do Firebase.
-// Este ficheiro JSON contém as credenciais seguras para a sua API aceder ao Firestore.
-// **AÇÃO NECESSÁRIA:** Gere este ficheiro no seu painel do Firebase e coloque-o na mesma pasta.
 const serviceAccount = require('./serviceAccountKey.json');
 
-// Inicialize o SDK do Firebase Admin com as suas credenciais.
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
-// Crie uma instância do banco de dados Firestore.
 const db = admin.firestore();
-
-// Crie uma instância da aplicação Express.
 const app = express();
-// Defina a porta em que o servidor irá rodar.
 const PORT = process.env.PORT || 3000;
 
-// Middleware para permitir que a API receba dados em formato JSON.
 app.use(express.json());
 
-// Middleware para habilitar o CORS (Cross-Origin Resource Sharing).
-// Isto é essencial para permitir que o seu dashboard (que roda noutra "origem")
-// possa fazer pedidos a esta API.
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-    next();
+// ATUALIZAÇÃO: Usa o middleware 'cors' para lidar com as permissões de forma robusta
+app.use(cors());
+
+// --- FUNÇÃO AUXILIAR PARA CALCULAR MÉTRICAS ---
+async function calculateMetricsForLeads(leadsSnapshot) {
+    const metrics = {
+        ligacoes: 0, conexoes: 0, conexoes_decisor: 0,
+        reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0
+    };
+
+    for (const leadDoc of leadsSnapshot.docs) {
+        const leadData = leadDoc.data();
+        if (leadData.stage === 'Vendido') metrics.vendas++;
+        if (leadData.stage === 'R1 - Feita') metrics.reunioes_realizadas++;
+        if (leadData.stage === 'R1 - Agendada') metrics.reunioes_marcadas++;
+
+        const activitiesRef = leadDoc.ref.collection('activities');
+        const activitiesSnapshot = await activitiesRef.get();
+        activitiesSnapshot.forEach(activityDoc => {
+            const activityData = activityDoc.data();
+            if (activityData.type === 'Ligação') {
+                metrics.ligacoes++;
+                if (activityData.outcome === 'Conexão Realizada') metrics.conexoes++;
+                if (activityData.outcome === 'Conexão com Decisor') {
+                    metrics.conexoes++;
+                    metrics.conexoes_decisor++;
+                }
+            }
+        });
+    }
+    return metrics;
+}
+
+// --- ROTAS DA API ---
+
+// NOVO ENDPOINT: Retorna a lista de todos os vendedores
+app.get('/api/sellers', async (req, res) => {
+    try {
+        const sellersDoc = await db.collection('crm_config').doc('sellers').get();
+        if (!sellersDoc.exists) {
+            return res.status(404).json({ error: 'Documento de vendedores não encontrado.' });
+        }
+        res.status(200).json(sellersDoc.data().list || []);
+    } catch (error) {
+        console.error("Erro ao buscar vendedores:", error);
+        res.status(500).json({ error: 'Ocorreu um erro interno no servidor.' });
+    }
 });
 
-
-// --- DEFINIÇÃO DAS ROTAS DA API ---
-
-/**
- * ROTA PRINCIPAL DE MÉTRICAS
- * GET /api/metrics
- * * Esta rota calcula as métricas de performance para um vendedor num dado período.
- * * Parâmetros de Query:
- * - sellerName (string, obrigatório): O nome do vendedor para filtrar.
- * - startDate (string, opcional, formato YYYY-MM-DD): Data de início do período.
- * - endDate (string, opcional, formato YYYY-MM-DD): Data de fim do período.
- */
-app.get('/api/metrics', async (req, res) => {
+// ENDPOINT ATUALIZADO: Retorna métricas para um vendedor específico
+app.get('/api/metrics/seller/:sellerName', async (req, res) => {
     try {
-        // Extrai os parâmetros da query da URL.
-        const { sellerName, startDate, endDate } = req.query;
-
-        // Validação: Verifica se o nome do vendedor foi fornecido.
-        if (!sellerName) {
-            return res.status(400).json({ error: 'O parâmetro "sellerName" é obrigatório.' });
-        }
-
-        // --- Passo 1: Buscar todos os leads do vendedor ---
+        const { sellerName } = req.params;
         const leadsRef = db.collection('crm_leads_shared');
         const leadsQuery = leadsRef.where('vendedor', '==', sellerName);
         const leadsSnapshot = await leadsQuery.get();
 
         if (leadsSnapshot.empty) {
-            return res.status(404).json({ message: `Nenhum lead encontrado para o vendedor: ${sellerName}` });
-        }
-
-        // --- Passo 2: Inicializar contadores de métricas ---
-        const metrics = {
-            ligacoes: 0,
-            conexoes: 0,
-            conexoes_decisor: 0,
-            reunioes_marcadas: 0, // Será contado pelos estágios
-            reunioes_realizadas: 0, // Será contado pelos estágios
-            vendas: 0 // Será contado pelos estágios
-        };
-
-        // --- Passo 3: Processar cada lead para contar atividades e estágios ---
-        // Usamos um loop `for...of` para poder usar `await` dentro dele.
-        for (const leadDoc of leadsSnapshot.docs) {
-            const leadData = leadDoc.data();
-
-            // Contagem baseada nos ESTÁGIOS do lead
-            if (leadData.stage === 'Vendido') metrics.vendas++;
-            if (leadData.stage === 'R1 - Feita') metrics.reunioes_realizadas++;
-            if (leadData.stage === 'R1 - Agendada') metrics.reunioes_marcadas++;
-
-            // Contagem baseada nas ATIVIDADES registadas (subcoleção)
-            const activitiesRef = leadDoc.ref.collection('activities');
-            const activitiesSnapshot = await activitiesRef.get();
-
-            activitiesSnapshot.forEach(activityDoc => {
-                const activityData = activityDoc.data();
-
-                // Filtra por data se os parâmetros foram fornecidos
-                // (Nota: Esta filtragem é feita na aplicação, não na query, por simplicidade)
-                const activityDate = activityData.timestamp.toDate();
-                if (startDate && activityDate < new Date(startDate)) return;
-                if (endDate && activityDate > new Date(endDate)) return;
-
-                // Incrementa os contadores de atividades
-                if (activityData.type === 'Ligação') {
-                    metrics.ligacoes++;
-                    if (activityData.outcome === 'Conexão Realizada') {
-                        metrics.conexoes++;
-                    }
-                    if (activityData.outcome === 'Conexão com Decisor') {
-                        metrics.conexoes++; // Uma conexão com decisor também é uma conexão.
-                        metrics.conexoes_decisor++;
-                    }
-                }
+            return res.status(200).json({
+                sellerName: sellerName,
+                metrics: { ligacoes: 0, conexoes: 0, conexoes_decisor: 0, reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0 }
             });
         }
-
-        // --- Passo 4: Enviar a resposta com as métricas calculadas ---
-        res.status(200).json({
-            sellerName: sellerName,
-            period: {
-                start: startDate || 'Início',
-                end: endDate || 'Fim'
-            },
-            metrics: metrics
-        });
+        
+        const metrics = await calculateMetricsForLeads(leadsSnapshot);
+        res.status(200).json({ sellerName, metrics });
 
     } catch (error) {
-        console.error("Erro ao processar as métricas:", error);
+        console.error("Erro ao processar métricas de vendedor:", error);
         res.status(500).json({ error: 'Ocorreu um erro interno no servidor.' });
     }
 });
 
+// NOVO ENDPOINT: Retorna as métricas consolidadas de toda a equipa
+app.get('/api/metrics/team', async (req, res) => {
+    try {
+        const leadsRef = db.collection('crm_leads_shared');
+        const leadsSnapshot = await leadsRef.get();
+
+        if (leadsSnapshot.empty) {
+            return res.status(200).json({
+                sellerName: "Equipa Completa",
+                metrics: { ligacoes: 0, conexoes: 0, conexoes_decisor: 0, reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0 }
+            });
+        }
+
+        const metrics = await calculateMetricsForLeads(leadsSnapshot);
+        res.status(200).json({ sellerName: "Equipa Completa", metrics });
+
+    } catch (error) {
+        console.error("Erro ao processar métricas da equipa:", error);
+        res.status(500).json({ error: 'Ocorreu um erro interno no servidor.' });
+    }
+});
 
 // --- INICIALIZAÇÃO DO SERVIDOR ---
-
-// O servidor começa a "escutar" por pedidos na porta definida.
 app.listen(PORT, () => {
-    console.log(`Servidor da API do CRM a rodar na porta ${PORT}`);
-    console.log(`Endpoint de teste: http://localhost:${PORT}/api/metrics?sellerName=NOME_DO_VENDEDOR`);
+    console.log(`Servidor da API do CRM v2.1 a rodar na porta ${PORT}`);
 });
