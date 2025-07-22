@@ -1,9 +1,10 @@
 // Importação dos módulos necessários
 const express = require('express');
 const admin = require('firebase-admin');
-const cors = require('cors'); // Importa o pacote CORS
+const cors = require('cors');
 
 // --- CONFIGURAÇÃO INICIAL ---
+// O Render irá buscar este ficheiro a partir do "Secret File" que configurámos.
 const serviceAccount = require('./serviceAccountKey.json');
 
 admin.initializeApp({
@@ -12,12 +13,11 @@ admin.initializeApp({
 
 const db = admin.firestore();
 const app = express();
+// O Render define a porta automaticamente através da variável de ambiente PORT.
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
-
-// ATUALIZAÇÃO: Usa o middleware 'cors' para lidar com as permissões de forma robusta
-app.use(cors());
+app.use(cors()); // Habilita o CORS para todas as rotas.
 
 // --- FUNÇÃO AUXILIAR PARA CALCULAR MÉTRICAS ---
 async function calculateMetricsForLeads(leadsSnapshot) {
@@ -51,7 +51,12 @@ async function calculateMetricsForLeads(leadsSnapshot) {
 
 // --- ROTAS DA API ---
 
-// NOVO ENDPOINT: Retorna a lista de todos os vendedores
+// ROTA DE DIAGNÓSTICO: Para verificar se o servidor está a responder.
+app.get('/', (req, res) => {
+    res.status(200).send('Servidor da API do ATTUS CRM está online e a funcionar!');
+});
+
+// Rota para buscar a lista de vendedores
 app.get('/api/sellers', async (req, res) => {
     try {
         const sellersDoc = await db.collection('crm_config').doc('sellers').get();
@@ -65,12 +70,11 @@ app.get('/api/sellers', async (req, res) => {
     }
 });
 
-// ENDPOINT ATUALIZADO: Retorna métricas para um vendedor específico
+// Rota para buscar métricas de um vendedor específico
 app.get('/api/metrics/seller/:sellerName', async (req, res) => {
     try {
         const { sellerName } = req.params;
-        const leadsRef = db.collection('crm_leads_shared');
-        const leadsQuery = leadsRef.where('vendedor', '==', sellerName);
+        const leadsQuery = db.collection('crm_leads_shared').where('vendedor', '==', sellerName);
         const leadsSnapshot = await leadsQuery.get();
 
         if (leadsSnapshot.empty) {
@@ -89,11 +93,10 @@ app.get('/api/metrics/seller/:sellerName', async (req, res) => {
     }
 });
 
-// NOVO ENDPOINT: Retorna as métricas consolidadas de toda a equipa
+// Rota para buscar métricas da equipa completa
 app.get('/api/metrics/team', async (req, res) => {
     try {
-        const leadsRef = db.collection('crm_leads_shared');
-        const leadsSnapshot = await leadsRef.get();
+        const leadsSnapshot = await db.collection('crm_leads_shared').get();
 
         if (leadsSnapshot.empty) {
             return res.status(200).json({
@@ -113,5 +116,5 @@ app.get('/api/metrics/team', async (req, res) => {
 
 // --- INICIALIZAÇÃO DO SERVIDOR ---
 app.listen(PORT, () => {
-    console.log(`Servidor da API do CRM v2.1 a rodar na porta ${PORT}`);
+    console.log(`Servidor da API do CRM v2.2 a rodar na porta ${PORT}`);
 });
