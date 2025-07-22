@@ -1,0 +1,15 @@
+{
+  "name": "api-crm",
+  "version": "1.0.0",
+  "description": "API para as métricas do ATTUS CRM",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.19.2",
+    "firebase-admin": "^12.1.0"
+  }
+}
