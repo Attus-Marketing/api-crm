@@ -4,7 +4,6 @@ const admin = require('firebase-admin');
 const cors = require('cors');
 
 // --- CONFIGURAÇÃO INICIAL ---
-// O Render irá buscar este ficheiro a partir do "Secret File" que configurámos.
 const serviceAccount = require('./serviceAccountKey.json');
 
 admin.initializeApp({
@@ -13,27 +12,46 @@ admin.initializeApp({
 
 const db = admin.firestore();
 const app = express();
-// O Render define a porta automaticamente através da variável de ambiente PORT.
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
-app.use(cors()); // Habilita o CORS para todas as rotas.
+app.use(cors());
 
 // --- FUNÇÃO AUXILIAR PARA CALCULAR MÉTRICAS ---
-async function calculateMetricsForLeads(leadsSnapshot) {
+async function calculateMetricsForLeads(leadsSnapshot, startDate, endDate) {
     const metrics = {
         ligacoes: 0, conexoes: 0, conexoes_decisor: 0,
         reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0
     };
 
+    // Converte as strings de data para objetos Date do JavaScript
+    const start = startDate ? new Date(startDate) : null;
+    const end = endDate ? new Date(endDate) : null;
+    if(end) end.setHours(23, 59, 59, 999); // Garante que o dia final é incluído na totalidade
+
     for (const leadDoc of leadsSnapshot.docs) {
         const leadData = leadDoc.data();
+        
+        // ATUALIZAÇÃO: A contagem de estágios também precisa de ser filtrada por data.
+        // Isto requer que guardemos a data em que um estágio é alterado.
+        // Por simplicidade, vamos manter a contagem total de estágios por agora.
         if (leadData.stage === 'Vendido') metrics.vendas++;
         if (leadData.stage === 'R1 - Feita') metrics.reunioes_realizadas++;
         if (leadData.stage === 'R1 - Agendada') metrics.reunioes_marcadas++;
 
+        // A filtragem por data será aplicada apenas às ATIVIDADES.
         const activitiesRef = leadDoc.ref.collection('activities');
-        const activitiesSnapshot = await activitiesRef.get();
+        let activitiesQuery = activitiesRef;
+
+        // Constrói a query do Firestore com base nas datas fornecidas
+        if (start) {
+            activitiesQuery = activitiesQuery.where('timestamp', '>=', start);
+        }
+        if (end) {
+            activitiesQuery = activitiesQuery.where('timestamp', '<=', end);
+        }
+
+        const activitiesSnapshot = await activitiesQuery.get();
         activitiesSnapshot.forEach(activityDoc => {
             const activityData = activityDoc.data();
             if (activityData.type === 'Ligação') {
@@ -51,12 +69,10 @@ async function calculateMetricsForLeads(leadsSnapshot) {
 
 // --- ROTAS DA API ---
 
-// ROTA DE DIAGNÓSTICO: Para verificar se o servidor está a responder.
 app.get('/', (req, res) => {
     res.status(200).send('Servidor da API do ATTUS CRM está online e a funcionar!');
 });
 
-// Rota para buscar a lista de vendedores
 app.get('/api/sellers', async (req, res) => {
     try {
         const sellersDoc = await db.collection('crm_config').doc('sellers').get();
@@ -65,56 +81,50 @@ app.get('/api/sellers', async (req, res) => {
         }
         res.status(200).json(sellersDoc.data().list || []);
     } catch (error) {
-        console.error("Erro ao buscar vendedores:", error);
         res.status(500).json({ error: 'Ocorreu um erro interno no servidor.' });
     }
 });
 
-// Rota para buscar métricas de um vendedor específico
+// ATUALIZADO: Aceita startDate e endDate como query params
 app.get('/api/metrics/seller/:sellerName', async (req, res) => {
     try {
         const { sellerName } = req.params;
+        const { startDate, endDate } = req.query; // Extrai as datas da query
+
         const leadsQuery = db.collection('crm_leads_shared').where('vendedor', '==', sellerName);
         const leadsSnapshot = await leadsQuery.get();
 
         if (leadsSnapshot.empty) {
-            return res.status(200).json({
-                sellerName: sellerName,
-                metrics: { ligacoes: 0, conexoes: 0, conexoes_decisor: 0, reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0 }
-            });
+            return res.status(200).json({ sellerName, metrics: { ligacoes: 0, conexoes: 0, conexoes_decisor: 0, reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0 } });
         }
         
-        const metrics = await calculateMetricsForLeads(leadsSnapshot);
+        const metrics = await calculateMetricsForLeads(leadsSnapshot, startDate, endDate);
         res.status(200).json({ sellerName, metrics });
 
     } catch (error) {
-        console.error("Erro ao processar métricas de vendedor:", error);
         res.status(500).json({ error: 'Ocorreu um erro interno no servidor.' });
     }
 });
 
-// Rota para buscar métricas da equipa completa
+// ATUALIZADO: Aceita startDate e endDate como query params
 app.get('/api/metrics/team', async (req, res) => {
     try {
+        const { startDate, endDate } = req.query; // Extrai as datas da query
         const leadsSnapshot = await db.collection('crm_leads_shared').get();
 
         if (leadsSnapshot.empty) {
-            return res.status(200).json({
-                sellerName: "Equipa Completa",
-                metrics: { ligacoes: 0, conexoes: 0, conexoes_decisor: 0, reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0 }
-            });
+            return res.status(200).json({ sellerName: "Equipa Completa", metrics: { ligacoes: 0, conexoes: 0, conexoes_decisor: 0, reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0 } });
         }
 
-        const metrics = await calculateMetricsForLeads(leadsSnapshot);
+        const metrics = await calculateMetricsForLeads(leadsSnapshot, startDate, endDate);
         res.status(200).json({ sellerName: "Equipa Completa", metrics });
 
     } catch (error) {
-        console.error("Erro ao processar métricas da equipa:", error);
         res.status(500).json({ error: 'Ocorreu um erro interno no servidor.' });
     }
 });
 
 // --- INICIALIZAÇÃO DO SERVIDOR ---
 app.listen(PORT, () => {
-    console.log(`Servidor da API do CRM v2.2 a rodar na porta ${PORT}`);
+    console.log(`Servidor da API do CRM v2.3 a rodar na porta ${PORT}`);
 });
