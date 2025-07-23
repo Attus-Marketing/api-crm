@@ -63,93 +63,98 @@ app.get('/api/sellers', async (req, res) => {
     } catch (error) { res.status(500).json({ error: 'Erro ao buscar vendedores.' }); }
 });
 
-app.get('/api/metrics/:type/:name?', async (req, res) => {
+app.get('/api/metrics/team', async (req, res) => {
     try {
-        const { type, name } = req.params;
         const { startDate, endDate } = req.query;
-        let leadsQuery;
-
-        if (type === 'team') {
-            leadsQuery = db.collection('crm_leads_shared');
-        } else if (type === 'seller' && name) {
-            leadsQuery = db.collection('crm_leads_shared').where('vendedor', '==', name);
-        } else {
-            return res.status(400).json({ error: 'Tipo de métrica inválido ou nome do vendedor em falta.' });
-        }
-        
-        const leadsSnapshot = await leadsQuery.get();
+        const leadsSnapshot = await db.collection('crm_leads_shared').get();
         const metrics = await calculateMetricsForLeads(leadsSnapshot, startDate, endDate);
-        const sellerName = type === 'team' ? 'Equipa Completa' : name;
-        res.status(200).json({ sellerName, metrics });
-    } catch (error) { res.status(500).json({ error: 'Erro ao calcular métricas.' }); }
+        res.status(200).json({ sellerName: "Equipa Completa", metrics });
+    } catch (error) { res.status(500).json({ error: 'Erro ao calcular métricas da equipa.' }); }
 });
 
-app.get('/api/analysis/:type', async (req, res) => {
+app.get('/api/metrics/seller/:name', async (req, res) => {
     try {
-        const { type } = req.params;
+        const { name } = req.params;
+        const { startDate, endDate } = req.query;
+        const leadsQuery = db.collection('crm_leads_shared').where('vendedor', '==', name);
+        const leadsSnapshot = await leadsQuery.get();
+        const metrics = await calculateMetricsForLeads(leadsSnapshot, startDate, endDate);
+        res.status(200).json({ sellerName: name, metrics });
+    } catch (error) { res.status(500).json({ error: 'Erro ao calcular métricas do vendedor.' }); }
+});
+
+app.get('/api/analysis/historical', async (req, res) => {
+    try {
         const { sellerName, metric, startDate, endDate } = req.query;
+        if (!metric || !startDate || !endDate) return res.status(400).json({ error: 'Parâmetros obrigatórios em falta.' });
+        
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
         
         let leadsQuery = db.collection('crm_leads_shared');
         if (sellerName && sellerName !== 'team') {
             leadsQuery = leadsQuery.where('vendedor', '==', sellerName);
         }
         const leadsSnapshot = await leadsQuery.get();
+        if (leadsSnapshot.empty) return res.status(200).json([]);
 
-        if (type === 'historical') {
-            const start = new Date(startDate);
-            const end = new Date(endDate);
-            end.setHours(23, 59, 59, 999);
-            const resultsByDay = {};
-            for (const leadDoc of leadsSnapshot.docs) {
-                const activitiesRef = leadDoc.ref.collection('activities');
-                const activitiesQuery = activitiesRef.where('timestamp', '>=', start).where('timestamp', '<=', end);
-                const activitiesSnapshot = await activitiesQuery.get();
-                activitiesSnapshot.forEach(actDoc => {
-                    const activity = actDoc.data();
-                    const day = activity.timestamp.toDate().toISOString().split('T')[0];
-                    if (!resultsByDay[day]) resultsByDay[day] = 0;
-                    if (metric === 'vendas' && activity.type === 'Etapa Alterada' && activity.outcome.includes('para Vendido')) resultsByDay[day]++;
-                });
-            }
-            const formattedResults = Object.keys(resultsByDay).map(day => ({ date: day, value: resultsByDay[day] })).sort((a,b) => new Date(a.date) - new Date(b.date));
-            return res.status(200).json(formattedResults);
+        const resultsByDay = {};
+        for (const leadDoc of leadsSnapshot.docs) {
+            const activitiesRef = leadDoc.ref.collection('activities');
+            const activitiesQuery = activitiesRef.where('timestamp', '>=', start).where('timestamp', '<=', end);
+            const activitiesSnapshot = await activitiesQuery.get();
+            activitiesSnapshot.forEach(actDoc => {
+                const activity = actDoc.data();
+                const day = activity.timestamp.toDate().toISOString().split('T')[0];
+                if (!resultsByDay[day]) resultsByDay[day] = 0;
+                if (metric === 'vendas' && activity.type === 'Etapa Alterada' && activity.outcome.includes('para Vendido')) resultsByDay[day]++;
+            });
         }
+        const formattedResults = Object.keys(resultsByDay).map(day => ({ date: day, value: resultsByDay[day] })).sort((a,b) => new Date(a.date) - new Date(b.date));
+        return res.status(200).json(formattedResults);
+    } catch (error) { res.status(500).json({ error: `Erro na análise histórica: ${error.message}` }); }
+});
         
-        if (type === 'ranking') {
-            const sellersDoc = await db.collection('crm_config').doc('sellers').get();
-            const sellerList = sellersDoc.exists() ? sellersDoc.data().list : [];
-            const rankingPromises = sellerList.map(async (seller) => {
-                if (seller === 'Sem Vendedor') return null;
-                const sellerLeadsQuery = db.collection('crm_leads_shared').where('vendedor', '==', seller);
-                const sellerLeadsSnapshot = await sellerLeadsQuery.get();
-                const metrics = await calculateMetricsForLeads(sellerLeadsSnapshot, startDate, endDate);
-                return { seller, value: metrics[metric] || 0 };
-            });
-            const rankingResults = (await Promise.all(rankingPromises)).filter(Boolean).sort((a, b) => b.value - a.value);
-            return res.status(200).json(rankingResults);
-        }
+app.get('/api/analysis/ranking', async (req, res) => {
+    try {
+        const { metric, startDate, endDate } = req.query;
+        if (!metric) return res.status(400).json({ error: 'Parâmetro metric é obrigatório.' });
 
-        if (type === 'categories') {
-            const leadsByCategory = {};
-            leadsSnapshot.forEach(doc => {
-                const lead = doc.data();
-                const category = lead.categoria || 'Sem Categoria';
-                if (!leadsByCategory[category]) leadsByCategory[category] = { docs: [] };
-                leadsByCategory[category].docs.push(doc);
-            });
-            const analysisPromises = Object.keys(leadsByCategory).map(async (category) => {
-                const metrics = await calculateMetricsForLeads({ docs: leadsByCategory[category].docs }, startDate, endDate);
-                const conversionRate = metrics.reunioes_realizadas > 0 ? (metrics.vendas / metrics.reunioes_realizadas) * 100 : 0;
-                return { category, metrics, conversionRate: conversionRate.toFixed(1) };
-            });
-            const results = (await Promise.all(analysisPromises)).sort((a,b) => b.conversionRate - a.conversionRate);
-            return res.status(200).json(results);
-        }
-
-        res.status(400).json({ error: 'Tipo de análise inválido.' });
-    } catch (error) { res.status(500).json({ error: `Erro na análise: ${error.message}` }); }
+        const sellersDoc = await db.collection('crm_config').doc('sellers').get();
+        const sellerList = sellersDoc.exists() ? sellersDoc.data().list : [];
+        const rankingPromises = sellerList.map(async (seller) => {
+            if (seller === 'Sem Vendedor') return null;
+            const sellerLeadsQuery = db.collection('crm_leads_shared').where('vendedor', '==', seller);
+            const sellerLeadsSnapshot = await sellerLeadsQuery.get();
+            const metrics = await calculateMetricsForLeads(sellerLeadsSnapshot, startDate, endDate);
+            return { seller, value: metrics[metric] || 0 };
+        });
+        const rankingResults = (await Promise.all(rankingPromises)).filter(Boolean).sort((a, b) => b.value - a.value);
+        return res.status(200).json(rankingResults);
+    } catch (error) { res.status(500).json({ error: `Erro no ranking: ${error.message}` }); }
 });
 
+app.get('/api/analysis/categories', async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+        const leadsSnapshot = await db.collection('crm_leads_shared').get();
+        const leadsByCategory = {};
+        leadsSnapshot.forEach(doc => {
+            const lead = doc.data();
+            const category = lead.categoria || 'Sem Categoria';
+            if (!leadsByCategory[category]) leadsByCategory[category] = { docs: [] };
+            leadsByCategory[category].docs.push(doc);
+        });
+        const analysisPromises = Object.keys(leadsByCategory).map(async (category) => {
+            const metrics = await calculateMetricsForLeads({ docs: leadsByCategory[category].docs }, startDate, endDate);
+            const conversionRate = metrics.reunioes_realizadas > 0 ? (metrics.vendas / metrics.reunioes_realizadas) * 100 : 0;
+            return { category, metrics, conversionRate: conversionRate.toFixed(1) };
+        });
+        const results = (await Promise.all(analysisPromises)).sort((a,b) => b.conversionRate - a.conversionRate);
+        return res.status(200).json(results);
+    } catch (error) { res.status(500).json({ error: `Erro na análise de categorias: ${error.message}` }); }
+});
 
 app.listen(PORT, () => {
     console.log(`Servidor da API do CRM v3.0 a rodar na porta ${PORT}`);
