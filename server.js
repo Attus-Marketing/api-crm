@@ -2,6 +2,7 @@ const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
 
+// --- CONFIGURAÇÃO INICIAL ---
 try {
     const serviceAccount = require('./serviceAccountKey.json');
     admin.initializeApp({
@@ -19,6 +20,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// --- FUNÇÃO AUXILIAR ---
 const calculateMetricsForLeads = async (leadsSnapshot, startDate, endDate) => {
     const metrics = { ligacoes: 0, conexoes: 0, conexoes_decisor: 0, reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0 };
     const start = startDate ? new Date(startDate) : null;
@@ -53,7 +55,7 @@ const calculateMetricsForLeads = async (leadsSnapshot, startDate, endDate) => {
 };
 
 // --- ROTAS ---
-app.get('/', (req, res) => res.status(200).send('Servidor da API do ATTUS CRM v3.0 está online!'));
+app.get('/', (req, res) => res.status(200).send('Servidor da API do ATTUS CRM v3.1 está online!'));
 
 app.get('/api/sellers', async (req, res) => {
     try {
@@ -157,5 +159,5 @@ app.get('/api/analysis/categories', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Servidor da API do CRM v3.0 a rodar na porta ${PORT}`);
+    console.log(`Servidor da API do CRM v3.1 a rodar na porta ${PORT}`);
 });
