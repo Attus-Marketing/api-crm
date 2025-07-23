@@ -34,19 +34,11 @@ const calculateMetricsForLeads = async (leadsSnapshot, startDate, endDate) => {
     for (const leadDoc of leadsSnapshot.docs) {
         const leadData = leadDoc.data();
         
-        let includeStageMetrics = true;
-        if(leadData.lastStageChange && start && end) {
-            const changeDate = leadData.lastStageChange.toDate();
-            if(changeDate < start || changeDate > end) {
-                includeStageMetrics = false;
-            }
-        }
-        
-        if (includeStageMetrics) {
-            if (leadData.stage === 'Vendido') metrics.vendas++;
-            if (leadData.stage === 'R1 - Feita') metrics.reunioes_realizadas++;
-            if (leadData.stage === 'R1 - Agendada') metrics.reunioes_marcadas++;
-        }
+        // A contagem de estágios agora também é baseada nas atividades para respeitar o filtro de data
+        // Resetamos para esta contagem ser feita a seguir
+        // metrics.reunioes_marcadas = 0;
+        // metrics.reunioes_realizadas = 0;
+        // metrics.vendas = 0;
 
         const activitiesRef = leadDoc.ref.collection('activities');
         let activitiesQuery = activitiesRef;
@@ -65,6 +57,12 @@ const calculateMetricsForLeads = async (leadsSnapshot, startDate, endDate) => {
                     metrics.conexoes_decisor++;
                 }
             }
+            // Contagem de estágios baseada no histórico de atividades
+            if (activityData.type === 'Etapa Alterada') {
+                if (activityData.outcome.includes('para Vendido')) metrics.vendas++;
+                if (activityData.outcome.includes('para R1 - Feita')) metrics.reunioes_realizadas++;
+                if (activityData.outcome.includes('para R1 - Agendada')) metrics.reunioes_marcadas++;
+            }
         });
     }
     return metrics;
@@ -72,7 +70,7 @@ const calculateMetricsForLeads = async (leadsSnapshot, startDate, endDate) => {
 
 // --- ROTAS DA API ---
 app.get('/', (req, res) => {
-    res.status(200).send('Servidor da API do ATTUS CRM v2.8 está online!');
+    res.status(200).send('Servidor da API do ATTUS CRM v2.9 está online!');
 });
 
 app.get('/api/sellers', async (req, res) => {
@@ -137,6 +135,7 @@ app.get('/api/goals/:sellerName', async (req, res) => {
     }
 });
 
+// ROTA DE ANÁLISE HISTÓRICA (INCLUÍDA CORRETAMENTE)
 app.get('/api/analysis/historical', async (req, res) => {
     try {
         const { sellerName, metric, startDate, endDate } = req.query;
@@ -178,6 +177,7 @@ app.get('/api/analysis/historical', async (req, res) => {
     }
 });
 
+// ROTA DE RANKING (INCLUÍDA CORRETAMENTE)
 app.get('/api/analysis/ranking', async (req, res) => {
     try {
         const { metric, startDate, endDate } = req.query;
@@ -205,6 +205,7 @@ app.get('/api/analysis/ranking', async (req, res) => {
     }
 });
 
+// ROTA DE ANÁLISE POR CATEGORIA (INCLUÍDA CORRETAMENTE)
 app.get('/api/analysis/categories', async (req, res) => {
     try {
         const { startDate, endDate } = req.query;
@@ -235,5 +236,5 @@ app.get('/api/analysis/categories', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Servidor da API do CRM v2.8 a rodar na porta ${PORT}`);
+    console.log(`Servidor da API do CRM v2.9 a rodar na porta ${PORT}`);
 });
