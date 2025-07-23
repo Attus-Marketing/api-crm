@@ -1,4 +1,4 @@
-// ### INÍCIO DO CÓDIGO PARA COLAR ###
+// ### INÍCIO DO CÓDIGO COMPLETO PARA TESTE ###
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
@@ -53,7 +53,8 @@ const calculateMetricsForLeads = async (leadDocs, startDate, endDate) => {
     return metrics;
 };
 
-app.get('/', (req, res) => res.status(200).send('Servidor da API do ATTUS CRM v4.0 está online!'));
+// --- LINHA ALTERADA PARA O TESTE ---
+app.get('/', (req, res) => res.status(200).send('API v5.0 - TESTE DEPLOY - Funcionando!'));
 
 app.get('/api/sellers', async (req, res) => {
     try {
@@ -138,4 +139,4 @@ app.get('/api/dashboard-data', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Servidor da API do CRM v4.0 a rodar na porta ${PORT}`);
 });
-// ### FIM DO CÓDIGO PARA COLAR ###
+// ### FIM DO CÓDIGO COMPLETO PARA TESTE ###
