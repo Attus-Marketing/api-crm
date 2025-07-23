@@ -1,4 +1,4 @@
-// ### INÍCIO DO CÓDIGO COMPLETO PARA TESTE ###
+// ### INÍCIO DO CÓDIGO COMPLETO E DEFINITIVO ###
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
@@ -53,9 +53,10 @@ const calculateMetricsForLeads = async (leadDocs, startDate, endDate) => {
     return metrics;
 };
 
-// --- LINHA ALTERADA PARA O TESTE ---
-app.get('/', (req, res) => res.status(200).send('API v5.0 - TESTE DEPLOY - Funcionando!'));
+// Rota principal da API
+app.get('/', (req, res) => res.status(200).send('Servidor da API do ATTUS CRM v4.0 está online!'));
 
+// Rota para buscar lista de vendedores
 app.get('/api/sellers', async (req, res) => {
     try {
         const sellersDoc = await db.collection('crm_config').doc('sellers').get();
@@ -64,6 +65,7 @@ app.get('/api/sellers', async (req, res) => {
     } catch (error) { res.status(500).json({ error: 'Erro ao buscar vendedores.' }); }
 });
 
+// Rota principal do Dashboard com a correção definitiva
 app.get('/api/dashboard-data', async (req, res) => {
     try {
         const { sellerName, startDate, endDate } = req.query;
@@ -97,7 +99,8 @@ app.get('/api/dashboard-data', async (req, res) => {
         const historical = Object.keys(resultsByDay).map(day => ({ date: day, value: resultsByDay[day] })).sort((a,b) => new Date(a.date) - new Date(b.date));
 
         const sellersDoc = await db.collection('crm_config').doc('sellers').get();
-        const sellerList = sellersDoc.exists() ? sellersDoc.data()?.list || [] : [];
+        const sellerList = sellersDoc.exists ? sellersDoc.data()?.list || [] : [];
+        
         const rankingPromises = sellerList.map(async (seller) => {
             if (seller === 'Sem Vendedor') return null;
             const sellerLeadsQuery = db.collection('crm_leads_shared').where('vendedor', '==', seller);
@@ -137,6 +140,4 @@ app.get('/api/dashboard-data', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Servidor da API do CRM v4.0 a rodar na porta ${PORT}`);
-});
-// ### FIM DO CÓDIGO COMPLETO PARA TESTE ###
+    console.log(`Servidor da API do CRM v4.0
