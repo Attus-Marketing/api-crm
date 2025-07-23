@@ -1,37 +1,156 @@
 const express = require('express');
+const admin = require('firebase-admin');
 const cors = require('cors');
 
+try {
+    const serviceAccount = require('./serviceAccountKey.json');
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+} catch (error) {
+    console.error("Ficheiro serviceAccountKey.json não encontrado ou inválido.", error);
+    process.exit(1);
+}
+
+const db = admin.firestore();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
 
-// Rota de diagnóstico para sabermos que este é o código certo
-app.get('/', (req, res) => {
-    res.status(200).send('Servidor de TESTE DE CONEXÃO da API está online!');
+const calculateMetricsForLeads = async (leadsSnapshot, startDate, endDate) => {
+    const metrics = { ligacoes: 0, conexoes: 0, conexoes_decisor: 0, reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0 };
+    const start = startDate ? new Date(startDate) : null;
+    const end = endDate ? new Date(endDate) : null;
+    if(end) end.setHours(23, 59, 59, 999);
+
+    for (const leadDoc of leadsSnapshot.docs) {
+        const activitiesRef = leadDoc.ref.collection('activities');
+        let activitiesQuery = activitiesRef;
+        if (start) activitiesQuery = activitiesQuery.where('timestamp', '>=', start);
+        if (end) activitiesQuery = activitiesQuery.where('timestamp', '<=', end);
+        
+        const activitiesSnapshot = await activitiesQuery.get();
+        activitiesSnapshot.forEach(activityDoc => {
+            const activityData = activityDoc.data();
+            if (activityData.type === 'Ligação') {
+                metrics.ligacoes++;
+                if (activityData.outcome === 'Conexão Realizada') metrics.conexoes++;
+                if (activityData.outcome === 'Conexão com Decisor') {
+                    metrics.conexoes++;
+                    metrics.conexoes_decisor++;
+                }
+            }
+            if (activityData.type === 'Etapa Alterada') {
+                if (activityData.outcome.includes('para Vendido')) metrics.vendas++;
+                if (activityData.outcome.includes('para R1 - Feita')) metrics.reunioes_realizadas++;
+                if (activityData.outcome.includes('para R1 - Agendada')) metrics.reunioes_marcadas++;
+            }
+        });
+    }
+    return metrics;
+};
+
+// --- ROTAS ---
+app.get('/', (req, res) => res.status(200).send('Servidor da API do ATTUS CRM v3.0 está online!'));
+
+app.get('/api/sellers', async (req, res) => {
+    try {
+        const sellersDoc = await db.collection('crm_config').doc('sellers').get();
+        if (!sellersDoc.exists) return res.status(404).json({ error: 'Documento de vendedores não encontrado.' });
+        res.status(200).json(sellersDoc.data().list || []);
+    } catch (error) { res.status(500).json({ error: 'Erro ao buscar vendedores.' }); }
 });
 
-// Rota de teste para /api/sellers
-// Responde com uma lista de vendedores falsa para testar a conexão.
-app.get('/api/sellers', (req, res) => {
-    console.log("Recebido pedido em /api/sellers (versão de teste)");
-    res.status(200).json(["Vendedor A", "Vendedor B", "Vendedor C"]);
+app.get('/api/metrics/:type/:name?', async (req, res) => {
+    try {
+        const { type, name } = req.params;
+        const { startDate, endDate } = req.query;
+        let leadsQuery;
+
+        if (type === 'team') {
+            leadsQuery = db.collection('crm_leads_shared');
+        } else if (type === 'seller' && name) {
+            leadsQuery = db.collection('crm_leads_shared').where('vendedor', '==', name);
+        } else {
+            return res.status(400).json({ error: 'Tipo de métrica inválido ou nome do vendedor em falta.' });
+        }
+        
+        const leadsSnapshot = await leadsQuery.get();
+        const metrics = await calculateMetricsForLeads(leadsSnapshot, startDate, endDate);
+        const sellerName = type === 'team' ? 'Equipa Completa' : name;
+        res.status(200).json({ sellerName, metrics });
+    } catch (error) { res.status(500).json({ error: 'Erro ao calcular métricas.' }); }
 });
 
-// Para todas as outras rotas da API, responde com dados vazios para não quebrar o dashboard.
-// Isto garante que o dashboard não mostra um erro, mesmo que os dados estejam vazios.
-app.get('/api/metrics/:type/:name?', (req, res) => {
-    res.status(200).json({
-        sellerName: "Modo de Teste",
-        metrics: { ligacoes: 0, conexoes: 0, conexoes_decisor: 0, reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0 }
-    });
+app.get('/api/analysis/:type', async (req, res) => {
+    try {
+        const { type } = req.params;
+        const { sellerName, metric, startDate, endDate } = req.query;
+        
+        let leadsQuery = db.collection('crm_leads_shared');
+        if (sellerName && sellerName !== 'team') {
+            leadsQuery = leadsQuery.where('vendedor', '==', sellerName);
+        }
+        const leadsSnapshot = await leadsQuery.get();
+
+        if (type === 'historical') {
+            const start = new Date(startDate);
+            const end = new Date(endDate);
+            end.setHours(23, 59, 59, 999);
+            const resultsByDay = {};
+            for (const leadDoc of leadsSnapshot.docs) {
+                const activitiesRef = leadDoc.ref.collection('activities');
+                const activitiesQuery = activitiesRef.where('timestamp', '>=', start).where('timestamp', '<=', end);
+                const activitiesSnapshot = await activitiesQuery.get();
+                activitiesSnapshot.forEach(actDoc => {
+                    const activity = actDoc.data();
+                    const day = activity.timestamp.toDate().toISOString().split('T')[0];
+                    if (!resultsByDay[day]) resultsByDay[day] = 0;
+                    if (metric === 'vendas' && activity.type === 'Etapa Alterada' && activity.outcome.includes('para Vendido')) resultsByDay[day]++;
+                });
+            }
+            const formattedResults = Object.keys(resultsByDay).map(day => ({ date: day, value: resultsByDay[day] })).sort((a,b) => new Date(a.date) - new Date(b.date));
+            return res.status(200).json(formattedResults);
+        }
+        
+        if (type === 'ranking') {
+            const sellersDoc = await db.collection('crm_config').doc('sellers').get();
+            const sellerList = sellersDoc.exists() ? sellersDoc.data().list : [];
+            const rankingPromises = sellerList.map(async (seller) => {
+                if (seller === 'Sem Vendedor') return null;
+                const sellerLeadsQuery = db.collection('crm_leads_shared').where('vendedor', '==', seller);
+                const sellerLeadsSnapshot = await sellerLeadsQuery.get();
+                const metrics = await calculateMetricsForLeads(sellerLeadsSnapshot, startDate, endDate);
+                return { seller, value: metrics[metric] || 0 };
+            });
+            const rankingResults = (await Promise.all(rankingPromises)).filter(Boolean).sort((a, b) => b.value - a.value);
+            return res.status(200).json(rankingResults);
+        }
+
+        if (type === 'categories') {
+            const leadsByCategory = {};
+            leadsSnapshot.forEach(doc => {
+                const lead = doc.data();
+                const category = lead.categoria || 'Sem Categoria';
+                if (!leadsByCategory[category]) leadsByCategory[category] = { docs: [] };
+                leadsByCategory[category].docs.push(doc);
+            });
+            const analysisPromises = Object.keys(leadsByCategory).map(async (category) => {
+                const metrics = await calculateMetricsForLeads({ docs: leadsByCategory[category].docs }, startDate, endDate);
+                const conversionRate = metrics.reunioes_realizadas > 0 ? (metrics.vendas / metrics.reunioes_realizadas) * 100 : 0;
+                return { category, metrics, conversionRate: conversionRate.toFixed(1) };
+            });
+            const results = (await Promise.all(analysisPromises)).sort((a,b) => b.conversionRate - a.conversionRate);
+            return res.status(200).json(results);
+        }
+
+        res.status(400).json({ error: 'Tipo de análise inválido.' });
+    } catch (error) { res.status(500).json({ error: `Erro na análise: ${error.message}` }); }
 });
 
-app.get('/api/analysis/:type', (req, res) => {
-    res.status(200).json([]);
-});
 
 app.listen(PORT, () => {
-    console.log(`Servidor de TESTE DE CONEXÃO da API a rodar na porta ${PORT}`);
+    console.log(`Servidor da API do CRM v3.0 a rodar na porta ${PORT}`);
 });
