@@ -19,13 +19,17 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-const calculateMetricsForLeads = async (leadsSnapshot, startDate, endDate) => {
+// --- FUNÇÃO CORRIGIDA ---
+// A função agora espera um array de documentos (docs) diretamente,
+// em vez de um objeto "snapshot" inteiro. Isso a torna mais simples e robusta.
+const calculateMetricsForLeads = async (leadDocs, startDate, endDate) => {
     const metrics = { ligacoes: 0, conexoes: 0, conexoes_decisor: 0, reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0 };
     const start = startDate ? new Date(startDate) : null;
     const end = endDate ? new Date(endDate) : null;
     if(end) end.setHours(23, 59, 59, 999);
 
-    for (const leadDoc of leadsSnapshot.docs) {
+    // O loop agora itera diretamente sobre o array recebido.
+    for (const leadDoc of leadDocs) {
         const activitiesRef = leadDoc.ref.collection('activities');
         let activitiesQuery = activitiesRef;
         if (start) activitiesQuery = activitiesQuery.where('timestamp', '>=', start);
@@ -79,7 +83,8 @@ app.get('/api/dashboard-data', async (req, res) => {
         const leadsSnapshot = await leadsQuery.get();
         
         // 2. Calcular Métricas
-        const metrics = await calculateMetricsForLeads(leadsSnapshot, startDate, endDate);
+        // --- CORREÇÃO --- : Passamos 'leadsSnapshot.docs' em vez do objeto inteiro.
+        const metrics = await calculateMetricsForLeads(leadsSnapshot.docs, startDate, endDate);
 
         // 3. Calcular Análise Histórica (Vendas)
         const start = new Date(startDate);
@@ -101,12 +106,14 @@ app.get('/api/dashboard-data', async (req, res) => {
 
         // 4. Calcular Ranking de Vendedores (sempre da equipa toda)
         const sellersDoc = await db.collection('crm_config').doc('sellers').get();
-        const sellerList = sellersDoc.exists() ? sellersDoc.data().list : [];
+        // --- MELHORIA --- : Adicionado '?.list' e '|| []' para mais segurança.
+        const sellerList = sellersDoc.exists() ? sellersDoc.data()?.list || [] : [];
         const rankingPromises = sellerList.map(async (seller) => {
             if (seller === 'Sem Vendedor') return null;
             const sellerLeadsQuery = db.collection('crm_leads_shared').where('vendedor', '==', seller);
             const sellerLeadsSnapshot = await sellerLeadsQuery.get();
-            const sellerMetrics = await calculateMetricsForLeads(sellerLeadsSnapshot, startDate, endDate);
+            // --- CORREÇÃO --- : Passamos 'sellerLeadsSnapshot.docs' em vez do objeto inteiro.
+            const sellerMetrics = await calculateMetricsForLeads(sellerLeadsSnapshot.docs, startDate, endDate);
             return { seller, value: sellerMetrics['vendas'] || 0 };
         });
         const ranking = (await Promise.all(rankingPromises)).filter(Boolean).sort((a, b) => b.value - a.value);
@@ -117,11 +124,12 @@ app.get('/api/dashboard-data', async (req, res) => {
         allLeadsSnapshot.forEach(doc => {
             const lead = doc.data();
             const category = lead.categoria || 'Sem Categoria';
-            if (!leadsByCategory[category]) leadsByCategory[category] = { docs: [] };
-            leadsByCategory[category].docs.push(doc);
+            if (!leadsByCategory[category]) leadsByCategory[category] = [];
+            leadsByCategory[category].push(doc); // Agora o valor é diretamente o array de docs
         });
         const categoryPromises = Object.keys(leadsByCategory).map(async (category) => {
-            const catMetrics = await calculateMetricsForLeads({ docs: leadsByCategory[category].docs }, startDate, endDate);
+            // --- CORREÇÃO --- : Passamos o array de documentos diretamente.
+            const catMetrics = await calculateMetricsForLeads(leadsByCategory[category], startDate, endDate);
             const conversionRate = catMetrics.reunioes_realizadas > 0 ? (catMetrics.vendas / catMetrics.reunioes_realizadas) * 100 : 0;
             return { category, metrics: catMetrics, conversionRate: conversionRate.toFixed(1) };
         });
