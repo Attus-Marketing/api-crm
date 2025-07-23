@@ -1,3 +1,4 @@
+// ### INÍCIO DO CÓDIGO PARA COLAR ###
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
@@ -19,16 +20,12 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// --- FUNÇÃO CORRIGIDA ---
-// A função agora espera um array de documentos (docs) diretamente,
-// em vez de um objeto "snapshot" inteiro. Isso a torna mais simples e robusta.
 const calculateMetricsForLeads = async (leadDocs, startDate, endDate) => {
     const metrics = { ligacoes: 0, conexoes: 0, conexoes_decisor: 0, reunioes_marcadas: 0, reunioes_realizadas: 0, vendas: 0 };
     const start = startDate ? new Date(startDate) : null;
     const end = endDate ? new Date(endDate) : null;
     if(end) end.setHours(23, 59, 59, 999);
 
-    // O loop agora itera diretamente sobre o array recebido.
     for (const leadDoc of leadDocs) {
         const activitiesRef = leadDoc.ref.collection('activities');
         let activitiesQuery = activitiesRef;
@@ -56,7 +53,6 @@ const calculateMetricsForLeads = async (leadDocs, startDate, endDate) => {
     return metrics;
 };
 
-// --- ROTAS ---
 app.get('/', (req, res) => res.status(200).send('Servidor da API do ATTUS CRM v4.0 está online!'));
 
 app.get('/api/sellers', async (req, res) => {
@@ -67,7 +63,6 @@ app.get('/api/sellers', async (req, res) => {
     } catch (error) { res.status(500).json({ error: 'Erro ao buscar vendedores.' }); }
 });
 
-// NOVO "SUPER-ENDPOINT"
 app.get('/api/dashboard-data', async (req, res) => {
     try {
         const { sellerName, startDate, endDate } = req.query;
@@ -75,18 +70,14 @@ app.get('/api/dashboard-data', async (req, res) => {
             return res.status(400).json({ error: 'Parâmetros sellerName, startDate e endDate são obrigatórios.' });
         }
 
-        // 1. Obter os leads relevantes
         let leadsQuery = db.collection('crm_leads_shared');
         if (sellerName !== 'team') {
             leadsQuery = leadsQuery.where('vendedor', '==', sellerName);
         }
         const leadsSnapshot = await leadsQuery.get();
         
-        // 2. Calcular Métricas
-        // --- CORREÇÃO --- : Passamos 'leadsSnapshot.docs' em vez do objeto inteiro.
         const metrics = await calculateMetricsForLeads(leadsSnapshot.docs, startDate, endDate);
 
-        // 3. Calcular Análise Histórica (Vendas)
         const start = new Date(startDate);
         const end = new Date(endDate);
         end.setHours(23, 59, 59, 999);
@@ -104,38 +95,32 @@ app.get('/api/dashboard-data', async (req, res) => {
         }
         const historical = Object.keys(resultsByDay).map(day => ({ date: day, value: resultsByDay[day] })).sort((a,b) => new Date(a.date) - new Date(b.date));
 
-        // 4. Calcular Ranking de Vendedores (sempre da equipa toda)
         const sellersDoc = await db.collection('crm_config').doc('sellers').get();
-        // --- MELHORIA --- : Adicionado '?.list' e '|| []' para mais segurança.
         const sellerList = sellersDoc.exists() ? sellersDoc.data()?.list || [] : [];
         const rankingPromises = sellerList.map(async (seller) => {
             if (seller === 'Sem Vendedor') return null;
             const sellerLeadsQuery = db.collection('crm_leads_shared').where('vendedor', '==', seller);
             const sellerLeadsSnapshot = await sellerLeadsQuery.get();
-            // --- CORREÇÃO --- : Passamos 'sellerLeadsSnapshot.docs' em vez do objeto inteiro.
             const sellerMetrics = await calculateMetricsForLeads(sellerLeadsSnapshot.docs, startDate, endDate);
             return { seller, value: sellerMetrics['vendas'] || 0 };
         });
         const ranking = (await Promise.all(rankingPromises)).filter(Boolean).sort((a, b) => b.value - a.value);
 
-        // 5. Calcular Análise por Categoria (sempre da equipa toda)
         const allLeadsSnapshot = await db.collection('crm_leads_shared').get();
         const leadsByCategory = {};
         allLeadsSnapshot.forEach(doc => {
             const lead = doc.data();
             const category = lead.categoria || 'Sem Categoria';
             if (!leadsByCategory[category]) leadsByCategory[category] = [];
-            leadsByCategory[category].push(doc); // Agora o valor é diretamente o array de docs
+            leadsByCategory[category].push(doc);
         });
         const categoryPromises = Object.keys(leadsByCategory).map(async (category) => {
-            // --- CORREÇÃO --- : Passamos o array de documentos diretamente.
             const catMetrics = await calculateMetricsForLeads(leadsByCategory[category], startDate, endDate);
             const conversionRate = catMetrics.reunioes_realizadas > 0 ? (catMetrics.vendas / catMetrics.reunioes_realizadas) * 100 : 0;
             return { category, metrics: catMetrics, conversionRate: conversionRate.toFixed(1) };
         });
         const categories = (await Promise.all(categoryPromises)).sort((a,b) => b.conversionRate - a.conversionRate);
 
-        // 6. Enviar tudo num único pacote
         res.status(200).json({
             sellerName: sellerName === 'team' ? 'Equipa Completa' : sellerName,
             metrics,
@@ -153,3 +138,4 @@ app.get('/api/dashboard-data', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Servidor da API do CRM v4.0 a rodar na porta ${PORT}`);
 });
+// ### FIM DO CÓDIGO PARA COLAR ###
